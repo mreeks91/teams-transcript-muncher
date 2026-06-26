@@ -5,7 +5,7 @@ import asyncio
 import sys
 from pathlib import Path
 
-from teams_transcript.extractor import run_extract, run_login
+from teams_transcript.extractor import run_diagnose, run_extract, run_login
 from teams_transcript.formatter import format_as_text
 
 DEFAULT_PROFILE_DIR = Path.home() / ".teams-transcript" / "playwright-profile"
@@ -29,6 +29,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--login",
         action="store_true",
         help="Open browser for one-time Teams sign-in, then exit",
+    )
+    p.add_argument(
+        "--diagnose",
+        action="store_true",
+        help=(
+            "Navigate to the URL, dump all data-tid values and selector probe "
+            "results to stdout, and save diagnose_screenshot.png. "
+            "Use this when the transcript isn't being found to identify correct selectors."
+        ),
     )
     p.add_argument(
         "--profile-dir",
@@ -101,6 +110,19 @@ def main() -> None:
 
     if not args.url:
         parser.error("url is required unless --login is specified")
+
+    if args.diagnose:
+        asyncio.run(
+            run_diagnose(
+                args.url,
+                profile_dir,
+                channel=channel,
+                use_live_edge_profile=args.use_edge_profile,
+                headless=args.headless,
+                timeout_secs=args.timeout,
+            )
+        )
+        return
 
     if not args.use_edge_profile and not profile_dir.exists():
         print(

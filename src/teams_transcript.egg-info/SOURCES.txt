@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 src/teams_transcript/__init__.py
 src/teams_transcript/__main__.py

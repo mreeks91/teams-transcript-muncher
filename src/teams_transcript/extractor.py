@@ -282,6 +282,113 @@ async def extract_transcript(
     return sorted(all_entries.values(), key=lambda e: _parse_seconds(e.timestamp))
 
 
+async def diagnose_page(
+    page: Page,
+    url: str,
+    *,
+    timeout_secs: int = DEFAULT_TIMEOUT_SECS,
+) -> None:
+    """
+    Navigate to the URL and dump diagnostic info to stdout + a screenshot.
+    Use this to find the correct data-tid values after a Teams DOM update.
+    """
+    print(f"Navigating to {url}", flush=True)
+    await page.goto(url, wait_until="domcontentloaded", timeout=timeout_secs * 1000)
+    await _bypass_app_launch_page(page, debug=True)
+    try:
+        await page.wait_for_load_state("networkidle", timeout=timeout_secs * 1000)
+    except Exception:
+        pass
+    await _try_navigate_to_transcript_tab(page, debug=True)
+    # Extra settle time for React to finish rendering
+    await asyncio.sleep(3)
+
+    print(f"\nPage title : {await page.title()}", flush=True)
+    print(f"Page URL   : {page.url}", flush=True)
+
+    # All data-tid values on the page, sorted by frequency
+    tids: list[tuple[str, int]] = await page.evaluate("""
+        () => {
+            const counts = {};
+            for (const el of document.querySelectorAll('[data-tid]')) {
+                const t = el.getAttribute('data-tid');
+                counts[t] = (counts[t] || 0) + 1;
+            }
+            return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+        }
+    """)
+    print(f"\n=== data-tid values on page ({len(tids)} unique) ===", flush=True)
+    for tid, count in tids:
+        print(f"  {count:4d}x  {tid}", flush=True)
+
+    # Iframes (transcript might be inside one)
+    iframes = await page.query_selector_all("iframe")
+    if iframes:
+        print(f"\n=== iframes ({len(iframes)}) ===", flush=True)
+        for i, frame_el in enumerate(iframes):
+            src = await frame_el.get_attribute("src") or "(no src)"
+            name = await frame_el.get_attribute("name") or ""
+            print(f"  [{i}] name={name!r:20s}  src={src[:80]}", flush=True)
+
+    # Container selector probe
+    print("\n=== Container selectors ===", flush=True)
+    container = None
+    container_sel_used = None
+    for s in sel.CONTAINER_SELECTORS:
+        els = await page.query_selector_all(s)
+        hit = bool(els)
+        print(f"  {'MATCH' if hit else 'miss ':5s}  {s!r} ({len(els)})", flush=True)
+        if hit and container is None:
+            container = els[0]
+            container_sel_used = s
+
+    # Item selector probe, scoped to the first matching container (or full page)
+    scope_label = f"container {container_sel_used!r}" if container else "full page (no container)"
+    print(f"\n=== Item selectors (scope: {scope_label}) ===", flush=True)
+    scope = container if container is not None else page
+    for s in sel.ITEM_SELECTORS:
+        els = await scope.query_selector_all(s)
+        hit = bool(els)
+        print(f"  {'MATCH' if hit else 'miss ':5s}  {s!r} ({len(els)})", flush=True)
+        if hit:
+            for el in els[:3]:
+                txt = (await el.inner_text()).strip().replace("\n", " | ")
+                print(f"           → {txt[:120]!r}", flush=True)
+
+    # Screenshot
+    shot = Path("diagnose_screenshot.png")
+    await page.screenshot(path=str(shot), full_page=False)
+    print(f"\nScreenshot: {shot.resolve()}", flush=True)
+
+
+async def run_diagnose(
+    url: str,
+    profile_dir: Path,
+    *,
+    channel: str = "msedge",
+    use_live_edge_profile: bool = False,
+    headless: bool = False,
+    timeout_secs: int = DEFAULT_TIMEOUT_SECS,
+) -> None:
+    edge_profile = Path.home() / "AppData" / "Local" / "Microsoft" / "Edge" / "User Data"
+    async with async_playwright() as p:
+        profile_to_use = str(edge_profile) if use_live_edge_profile else str(profile_dir)
+        launch_args = ["--disable-features=ExternalProtocolDialog"]
+        if not headless:
+            launch_args.append("--start-maximized")
+        ctx = await p.chromium.launch_persistent_context(
+            user_data_dir=profile_to_use,
+            headless=headless,
+            channel=channel,
+            args=launch_args,
+        )
+        page = ctx.pages[0] if ctx.pages else await ctx.new_page()
+        try:
+            await diagnose_page(page, url, timeout_secs=timeout_secs)
+        finally:
+            await ctx.close()
+
+
 async def run_login(profile_dir: Path, channel: str = "msedge") -> None:
     """Open a browser window so the user can sign in to Teams; saves the session."""
     async with async_playwright() as p:

@@ -14,6 +14,20 @@ DEFAULT_SCROLL_PAUSE_MS = 700
 DEFAULT_TIMEOUT_SECS = 60
 DEFAULT_STALL_THRESHOLD = 3
 
+# Matches visible timestamps like "0:04", "1:23", "1:23:45"
+_TIME_RE = re.compile(r'\b(\d{1,2}:\d{2}(?::\d{2})?)\b')
+# Matches accessibility duration text injected by Teams for screen readers,
+# e.g. "0 minutes 4 seconds", "1 hour 2 minutes 3 seconds"
+_DURATION_RE = re.compile(
+    r'\d+\s+(?:hours?|minutes?|seconds?)(?:\s+\d+\s+(?:hours?|minutes?|seconds?))*',
+    re.IGNORECASE,
+)
+# System events that are not transcript speech
+_SYSTEM_MSG_RE = re.compile(
+    r'started transcription|stopped transcription|recording started|recording stopped',
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class TranscriptEntry:
@@ -82,77 +96,132 @@ async def _find_container(page: Page, *, debug: bool = False, retries: int = 3):
 
 async def _heuristic_container(page: Page, *, debug: bool = False):
     """
-    Last-resort: find any scrollable element whose children contain timestamps
-    matching HH:MM or HH:MM:SS. Returns the first match or None.
+    Find the transcript scroll container without relying on data-tid attributes.
+
+    Strategy 1: Walk up the DOM from the first [role=listitem] looking for the
+    nearest ancestor with overflow:scroll/auto and a scrollable height. This is
+    the direct parent scroll box of the transcript list.
+
+    Strategy 2: If no scrollable ancestor exists, use the direct parent of the
+    first listitem (the list might fit on screen now but grow as content loads).
+
+    Strategy 3: Scan all scrollable elements on the page for one whose inner
+    text contains a timestamp pattern.
     """
     result = await page.evaluate("""
         () => {
-            const TIME_RE = /\\b\\d{1,2}:\\d{2}(:\\d{2})?\\b/;
-            const candidates = document.querySelectorAll('[role="list"], [role="feed"], [overflow-y]');
-            for (const el of candidates) {
-                const kids = el.querySelectorAll('[role="listitem"], [role="article"]');
-                if (kids.length >= 2) {
-                    const sample = [...kids].slice(0, 5).map(k => k.innerText).join(' ');
-                    if (TIME_RE.test(sample)) {
-                        el.setAttribute('data-transcript-heuristic', 'true');
-                        return true;
+            const MARKER = 'data-transcript-scroll';
+
+            // Strategy 1 & 2: walk up from the first listitem
+            const firstItem = document.querySelector('[role="listitem"], [role="article"]');
+            if (firstItem) {
+                let el = firstItem.parentElement;
+                while (el && el !== document.documentElement) {
+                    const ov = window.getComputedStyle(el).overflowY;
+                    if ((ov === 'scroll' || ov === 'auto') && el.scrollHeight > el.clientHeight + 10) {
+                        el.setAttribute(MARKER, '1');
+                        return 'ancestor';
+                    }
+                    el = el.parentElement;
+                }
+                // No scrollable ancestor — use direct parent as the scroll target
+                const parent = firstItem.parentElement;
+                if (parent && parent !== document.body && parent !== document.documentElement) {
+                    parent.setAttribute(MARKER, '2');
+                    return 'parent';
+                }
+            }
+
+            // Strategy 3: any scrollable element whose text contains a timestamp
+            const TIME_RE = /\\b\\d{1,2}:\\d{2}\\b/;
+            for (const el of document.querySelectorAll('*')) {
+                const ov = window.getComputedStyle(el).overflowY;
+                if ((ov === 'scroll' || ov === 'auto') && el.scrollHeight > el.clientHeight + 10) {
+                    if (TIME_RE.test(el.innerText || '')) {
+                        el.setAttribute(MARKER, '3');
+                        return 'scrollable';
                     }
                 }
             }
-            return false;
+            return null;
         }
     """)
     if result:
-        el = await page.query_selector('[data-transcript-heuristic="true"]')
+        el = await page.query_selector('[data-transcript-scroll]')
         if debug:
-            print("  MATCH  [heuristic scrollable container]", flush=True)
+            print(f"  MATCH  [heuristic container, strategy={result}]", flush=True)
         return el
     return None
+
+
+def _parse_flat_list(raw_texts: list[str]) -> dict[str, TranscriptEntry]:
+    """
+    Parse Teams' flat [role=listitem] transcript structure.
+
+    Teams alternates between two item types:
+      Header item  — speaker name + accessibility duration text + visible timestamp
+                     e.g. "Julia Meisel0 minutes 4 seconds0:04"
+      Content item — plain transcript text, no timestamp
+                     e.g. "But this is what I wanted to say."
+
+    We detect header items by the presence of a timestamp pattern (digits:digits),
+    strip the accessibility duration string to recover the speaker name, and
+    pair each content item with the preceding header's speaker and timestamp.
+    """
+    entries: dict[str, TranscriptEntry] = {}
+    current_speaker = "Unknown"
+    current_timestamp = ""
+
+    for raw in raw_texts:
+        raw = raw.strip()
+        if not raw or _SYSTEM_MSG_RE.search(raw):
+            continue
+
+        time_matches = _TIME_RE.findall(raw)
+        if time_matches:
+            # Header item: extract speaker name and timestamp
+            current_timestamp = time_matches[-1]
+            speaker = _DURATION_RE.sub('', raw)
+            speaker = _TIME_RE.sub('', speaker).strip()
+            if speaker:
+                current_speaker = speaker
+        else:
+            # Content item: actual transcript speech
+            entry = TranscriptEntry(
+                timestamp=current_timestamp,
+                speaker=current_speaker,
+                text=raw,
+            )
+            key = _entry_key(entry)
+            entries.setdefault(key, entry)  # keep first-seen rendering
+
+    return entries
 
 
 async def _collect_visible(
     page: Page, container, *, debug: bool = False
 ) -> dict[str, TranscriptEntry]:
-    """Extract all currently-rendered transcript entries from the container."""
-    if debug:
-        print("\n[Item selectors]:", flush=True)
-    _item_sel, items = await _try_selectors(page, sel.ITEM_SELECTORS, scope=container, debug=debug)
-
-    entries: dict[str, TranscriptEntry] = {}
-    for item in items:
-        timestamp = await _first_text(item, sel.TIMESTAMP_SELECTORS)
-        speaker = await _first_text(item, sel.SPEAKER_SELECTORS)
-        text = await _first_text(item, sel.TEXT_SELECTORS)
-
-        if not text:
-            continue
-
-        if not re.search(r"\d{1,2}:\d{2}", timestamp or ""):
-            timestamp = ""
-
-        entry = TranscriptEntry(
-            timestamp=timestamp or "",
-            speaker=speaker or "Unknown",
-            text=text.strip(),
+    """
+    Grab the innerText of every [role=listitem] currently in the DOM
+    (scoped to the scroll container if one was found), then parse them
+    with _parse_flat_list.
+    """
+    if container is not None:
+        raw_texts: list[str] = await page.evaluate(
+            """(el) => [...el.querySelectorAll('[role="listitem"], [role="article"]')]
+                       .map(e => e.innerText)""",
+            container,
         )
-        key = _entry_key(entry)
-        entries[key] = entry
+    else:
+        raw_texts = await page.evaluate(
+            """() => [...document.querySelectorAll('[role="listitem"], [role="article"]')]
+                     .map(e => e.innerText)"""
+        )
 
-    return entries
+    if debug:
+        print(f"  [collect] {len(raw_texts)} raw items in DOM", flush=True)
 
-
-async def _first_text(element, selector_list: list[str]) -> str:
-    """Return innerText of the first sub-element that matches and has content."""
-    for s in selector_list:
-        try:
-            sub = await element.query_selector(s)
-            if sub:
-                text = (await sub.inner_text()).strip()
-                if text:
-                    return text
-        except Exception:
-            continue
-    return ""
+    return _parse_flat_list(raw_texts)
 
 
 async def _bypass_app_launch_page(page: Page, *, debug: bool = False) -> None:
@@ -185,7 +254,11 @@ async def _try_navigate_to_transcript_tab(page: Page, *, debug: bool = False) ->
     _winning, tabs = await _try_selectors(page, sel.TRANSCRIPT_TAB_SELECTORS, debug=debug)
     if tabs:
         await tabs[0].click()
-        await page.wait_for_load_state("networkidle", timeout=10_000)
+        try:
+            await page.wait_for_load_state("networkidle", timeout=10_000)
+        except Exception:
+            pass
+        await asyncio.sleep(2)  # let React finish rendering the list
         return True
     return False
 

@@ -334,6 +334,35 @@ async def _bypass_app_launch_page(page: Page, *, debug: bool = False) -> None:
             print("[App launch] no redirect page detected", flush=True)
 
 
+async def _try_watch_in_browser(page: Page, *, debug: bool = False):
+    """
+    Click 'Watch in browser' if present and return the new tab it opens.
+
+    Teams' v2 recap page sometimes shows a recording panel instead of an
+    embedded transcript.  The 'Watch in browser' button opens the same content
+    as a SharePoint recording page in a new tab — which exposes the transcript
+    panel our extraction logic already handles.  Returns None if the button
+    isn't found within 5 seconds.
+    """
+    combined = ", ".join(sel.WATCH_IN_BROWSER_SELECTORS)
+    try:
+        btn = await page.wait_for_selector(combined, timeout=5000)
+        print("[Watch in browser] found — switching to SharePoint view...", flush=True)
+        async with page.context.expect_page() as page_info:
+            await btn.click()
+        new_page = await page_info.value
+        try:
+            await new_page.wait_for_load_state("networkidle", timeout=30_000)
+        except Exception:
+            pass
+        await asyncio.sleep(3)
+        return new_page
+    except Exception:
+        if debug:
+            print("[Watch in browser] button not found", flush=True)
+        return None
+
+
 async def _try_navigate_to_transcript_tab(page: Page, *, debug: bool = False) -> bool:
     """If we land on a recap page without the transcript visible, click into the tab."""
     if debug:
@@ -375,6 +404,14 @@ async def extract_transcript(
     if container is None:
         await _try_navigate_to_transcript_tab(page, debug=debug)
         container = await _find_container(page, debug=debug, retries=2)
+
+    if container is None:
+        # Last resort: click "Watch in browser" which opens the SharePoint
+        # recording view in a new tab — switch to that page and try again.
+        new_page = await _try_watch_in_browser(page, debug=debug)
+        if new_page is not None:
+            page = new_page
+            container = await _find_container(page, debug=debug, retries=3)
 
     if container is None:
         print(

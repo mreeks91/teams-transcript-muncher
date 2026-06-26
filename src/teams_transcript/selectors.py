@@ -64,6 +64,15 @@ TRANSCRIPT_TAB_SELECTORS: list[str] = [
     'a[aria-label*="transcript" i]',
 ]
 
+# "Watch in browser" button on the Teams v2 recap page.
+# Clicking it opens the SharePoint recording view in a new tab, which exposes
+# the same transcript panel our extraction logic already handles.
+WATCH_IN_BROWSER_SELECTORS: list[str] = [
+    'button:has-text("Watch in browser")',
+    'a:has-text("Watch in browser")',
+    '[aria-label*="Watch in browser" i]',
+]
+
 # Buttons/links on the Teams "Open in app?" landing page.
 # Tried as a combined CSS selector so all are checked simultaneously.
 WEB_APP_BUTTON_SELECTORS: list[str] = [

@@ -238,10 +238,7 @@ async def _collect_visible(
 
 
 async def _pause_video(page: Page, *, debug: bool = False) -> None:
-    """
-    Pause any playing HTML5 video so Teams stops auto-scrolling the transcript
-    panel to follow the current playback position.
-    """
+    """Pause any playing HTML5 video elements as a best-effort measure."""
     count: int = await page.evaluate("""
         () => {
             let n = 0;
@@ -255,6 +252,62 @@ async def _pause_video(page: Page, *, debug: bool = False) -> None:
         print(f"Paused {count} video element(s).", flush=True)
     elif debug:
         print("[Video] no playing video found", flush=True)
+
+
+async def _lock_scroll_forward(page: Page, container, *, debug: bool = False) -> None:
+    """
+    Override scrollTop (and scrollTo) on the container element so it can only
+    move forward — never backwards.  Teams keeps the transcript panel synced
+    with video playback by repeatedly setting scrollTop to the position that
+    matches the current timestamp.  This silently ignores any attempt to set
+    scrollTop to a value lower than the highest value we've reached so far,
+    meaning Teams' auto-sync calls are no-ops while our forward scrolls still
+    work normally.
+    """
+    installed: bool = await page.evaluate("""
+        (el) => {
+            if (el.__scrollLocked) return false;
+            el.__scrollLocked = true;
+
+            // Find the descriptor on Element.prototype or HTMLElement.prototype
+            const desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop')
+                      || Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTop');
+            if (!desc || !desc.set) return false;
+
+            let _floor = desc.get.call(el);
+
+            Object.defineProperty(el, 'scrollTop', {
+                configurable: true,
+                enumerable: true,
+                get() { return desc.get.call(this); },
+                set(val) {
+                    if (val >= _floor) {
+                        _floor = val;
+                        desc.set.call(this, val);
+                    }
+                    // val < _floor means Teams is trying to scroll us back — ignore.
+                },
+            });
+
+            // scrollTo({top, behavior}) path
+            const _origScrollTo = el.scrollTo.bind(el);
+            el.scrollTo = function(optionsOrX, y) {
+                const top = (optionsOrX !== null && typeof optionsOrX === 'object')
+                    ? (optionsOrX.top ?? 0)
+                    : (y ?? 0);
+                if (top >= _floor) {
+                    _floor = top;
+                    _origScrollTo.apply(this, arguments);
+                }
+            };
+
+            return true;
+        }
+    """, container)
+
+    if debug:
+        status = "installed" if installed else "skipped (already locked or unsupported)"
+        print(f"[Scroll lock] {status}", flush=True)
 
 
 async def _bypass_app_launch_page(page: Page, *, debug: bool = False) -> None:
@@ -336,12 +389,16 @@ async def extract_transcript(
 
     print("Transcript container found. Scrolling to collect entries...", flush=True)
 
-    # Pause the video so Teams doesn't auto-scroll the transcript panel back
-    # to the current playback position while we're trying to read ahead.
+    # Pause the video as a best-effort measure.
     await _pause_video(page, debug=debug)
 
+    # Scroll to the top, then lock the container so Teams cannot scroll it
+    # backwards.  Teams continuously resets scrollTop to match the video's
+    # current playback position; the lock silently ignores any set() call
+    # that would move the scroll position backwards.
     await page.evaluate("(el) => { el.scrollTop = 0; }", container)
     await asyncio.sleep(0.5)
+    await _lock_scroll_forward(page, container, debug=debug)
 
     all_entries: dict[str, TranscriptEntry] = {}
     no_new_streak = 0   # consecutive steps with zero new entries

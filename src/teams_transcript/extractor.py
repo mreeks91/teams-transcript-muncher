@@ -14,10 +14,11 @@ DEFAULT_SCROLL_PAUSE_MS = 700
 DEFAULT_TIMEOUT_SECS = 60
 # How many consecutive steps where scrollTop + clientHeight >= scrollHeight
 # must fire before we conclude we've reached the true end of the list.
-BOTTOM_STREAK_REQUIRED = 4
+# At 700 ms/step this is ~7 seconds — enough to ride out a slow batch load.
+BOTTOM_STREAK_REQUIRED = 10
 # Safety-net: stop if no new entries appear for this many consecutive steps
 # even though scroll appears to still be moving (catches broken containers).
-NO_NEW_SAFETY_LIMIT = 20
+NO_NEW_SAFETY_LIMIT = 30
 
 # Matches visible timestamps like "0:04", "1:23", "1:23:45"
 _TIME_RE = re.compile(r'\b(\d{1,2}:\d{2}(?::\d{2})?)\b')

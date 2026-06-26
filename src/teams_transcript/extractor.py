@@ -5,6 +5,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
@@ -36,6 +37,28 @@ _SYSTEM_MSG_RE = re.compile(
 )
 # The final item Teams always appends — definitive proof we've reached the end.
 _END_SENTINEL_RE = re.compile(r'stopped transcription', re.IGNORECASE)
+
+
+def _extract_fileurl(url: str) -> str | None:
+    """
+    Return the decoded SharePoint URL embedded in a Teams meeting link, or None.
+
+    Teams recap URLs often contain a fileURL query parameter, e.g.:
+      https://teams.microsoft.com/...&fileURL=https%3A%2F%2Fcontoso-my.sharepoint.com%2F...
+
+    Teams v2 uses hash-based routing, so the parameter may sit inside the
+    fragment rather than the normal query string.
+    """
+    parsed = urlparse(url)
+    # Check the real query string first, then anything after '?' in the fragment.
+    candidates = [parsed.query]
+    if '?' in parsed.fragment:
+        candidates.append(parsed.fragment.split('?', 1)[1])
+    for qs in candidates:
+        params = parse_qs(qs)
+        if 'fileURL' in params:
+            return unquote(params['fileURL'][0])
+    return None
 
 
 @dataclass
@@ -388,6 +411,13 @@ async def extract_transcript(
     timeout_secs: int = DEFAULT_TIMEOUT_SECS,
     screenshot_dir: Path | None = None,
 ) -> list[TranscriptEntry]:
+    # If the Teams URL embeds a SharePoint fileURL, jump straight there — it
+    # exposes the same transcript panel without any app-launch redirect dance.
+    sp_url = _extract_fileurl(url)
+    if sp_url:
+        print(f"SharePoint URL found in Teams link — navigating directly...", flush=True)
+        url = sp_url
+
     print(f"Navigating to {url}", flush=True)
     await page.goto(url, wait_until="domcontentloaded", timeout=timeout_secs * 1000)
 

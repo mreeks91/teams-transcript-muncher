@@ -12,7 +12,12 @@ from teams_transcript import selectors as sel
 
 DEFAULT_SCROLL_PAUSE_MS = 700
 DEFAULT_TIMEOUT_SECS = 60
-DEFAULT_STALL_THRESHOLD = 3
+# How many consecutive steps where scrollTop + clientHeight >= scrollHeight
+# must fire before we conclude we've reached the true end of the list.
+BOTTOM_STREAK_REQUIRED = 4
+# Safety-net: stop if no new entries appear for this many consecutive steps
+# even though scroll appears to still be moving (catches broken containers).
+NO_NEW_SAFETY_LIMIT = 20
 
 # Matches visible timestamps like "0:04", "1:23", "1:23:45"
 _TIME_RE = re.compile(r'\b(\d{1,2}:\d{2}(?::\d{2})?)\b')
@@ -270,7 +275,6 @@ async def extract_transcript(
     debug: bool = False,
     scroll_pause_ms: int = DEFAULT_SCROLL_PAUSE_MS,
     timeout_secs: int = DEFAULT_TIMEOUT_SECS,
-    stall_threshold: int = DEFAULT_STALL_THRESHOLD,
     screenshot_dir: Path | None = None,
 ) -> list[TranscriptEntry]:
     print(f"Navigating to {url}", flush=True)
@@ -307,10 +311,11 @@ async def extract_transcript(
     await asyncio.sleep(0.5)
 
     all_entries: dict[str, TranscriptEntry] = {}
-    stalls = 0
+    no_new_streak = 0   # consecutive steps with zero new entries
+    bottom_streak = 0   # consecutive steps where scroll is truly at the end
     step = 0
 
-    while stalls < stall_threshold:
+    while True:
         step += 1
         visible = await _collect_visible(page, container, debug=False)
 
@@ -320,34 +325,55 @@ async def extract_transcript(
                 all_entries[key] = entry
                 new_count += 1
 
+        if new_count > 0:
+            no_new_streak = 0
+            bottom_streak = 0
+        else:
+            no_new_streak += 1
+
+        # Check whether we are at the true bottom of the scrollable content.
+        # This is separate from the scroll action so a mid-render pause can't
+        # produce a false "at bottom" reading.
+        at_bottom = await page.evaluate(
+            "(el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 10",
+            container,
+        )
+        if at_bottom:
+            bottom_streak += 1
+        else:
+            bottom_streak = 0
+
         if debug:
             print(
-                f"  Step {step:3d}: total={len(all_entries):4d}  new={new_count:3d}  stalls={stalls}",
+                f"  Step {step:3d}: total={len(all_entries):4d}  new={new_count:3d}"
+                f"  no_new={no_new_streak}  bottom_streak={bottom_streak}",
                 flush=True,
             )
 
         if screenshot_dir is not None:
             await page.screenshot(path=str(screenshot_dir / f"debug_scroll_{step:04d}.png"))
 
-        if new_count == 0:
-            stalls += 1
-        else:
-            stalls = 0
+        # Primary exit: scroll position has been at the end for several
+        # consecutive steps — we've genuinely reached the last item.
+        if bottom_streak >= BOTTOM_STREAK_REQUIRED:
+            break
 
-        at_bottom = await page.evaluate(
-            """
-            (el) => {
-                const before = el.scrollTop;
-                el.scrollTop += el.clientHeight * 0.8;
-                return Math.abs(el.scrollTop - before) < 2;
-            }
-            """,
+        # Safety exit: no new entries for a long stretch even though we're
+        # not at the bottom — something is wrong with the container.
+        if no_new_streak >= NO_NEW_SAFETY_LIMIT:
+            print(
+                f"  Warning: no new entries after {NO_NEW_SAFETY_LIMIT} steps; stopping early.",
+                file=sys.stderr,
+                flush=True,
+            )
+            break
+
+        # Scroll down
+        await page.evaluate(
+            "(el) => { el.scrollTop += el.clientHeight * 0.8; }",
             container,
         )
         await asyncio.sleep(scroll_pause_ms / 1000)
-
-        if at_bottom:
-            stalls += 1
 
     total = len(all_entries)
     print(f"Done. Collected {total} transcript entr{'y' if total == 1 else 'ies'}.", flush=True)

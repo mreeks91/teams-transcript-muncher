@@ -1,0 +1,65 @@
+"""
+Ordered selector chains for Teams transcript DOM elements.
+Teams uses React with `data-tid` test-id attributes; these are more stable
+than class names but can still change across app updates. Each list is tried
+in order — first match wins. `--debug` prints which selector matched.
+
+To update after a Teams DOM change: open DevTools on the recap page,
+inspect the transcript panel, find the new data-tid values, and add them
+to the front of the relevant list here.
+"""
+
+CONTAINER_SELECTORS: list[str] = [
+    '[data-tid="virtualizedTranscriptList"]',
+    '[data-tid="transcript-list"]',
+    '[data-tid="transcript-container"]',
+    '[data-tid="transcriptContainer"]',
+    '[role="list"][aria-label*="transcript" i]',
+    '[role="feed"]',
+]
+
+ITEM_SELECTORS: list[str] = [
+    '[data-tid="transcript-item-wrapper"]',
+    '[data-tid="transcriptItem"]',
+    '[data-tid="transcript-item"]',
+    '[role="listitem"]',
+    '[role="article"]',
+]
+
+SPEAKER_SELECTORS: list[str] = [
+    '[data-tid="transcript-item-speaker-name"]',
+    '[data-tid="speakerName"]',
+    '[data-tid="transcript-speaker"]',
+    '[data-tid="displayName"]',
+    'strong',
+    '[class*="speaker" i]',
+    '[class*="author" i]',
+]
+
+TIMESTAMP_SELECTORS: list[str] = [
+    '[data-tid="transcript-item-timestamp"]',
+    '[data-tid="timestamp"]',
+    '[data-tid="startTime"]',
+    'time',
+    '[datetime]',
+    '[class*="timestamp" i]',
+    '[class*="time" i]',
+]
+
+TEXT_SELECTORS: list[str] = [
+    '[data-tid="transcript-item-text"]',
+    '[data-tid="transcriptText"]',
+    '[data-tid="transcript-text"]',
+    '[data-tid="messageContent"]',
+    'p',
+    '[class*="content" i]',
+    '[class*="text" i]',
+]
+
+TRANSCRIPT_TAB_SELECTORS: list[str] = [
+    '[data-tid="recap-tab-transcript"]',
+    '[data-tid="transcript-tab"]',
+    '[role="tab"][aria-label*="transcript" i]',
+    'button[aria-label*="transcript" i]',
+    'a[aria-label*="transcript" i]',
+]

@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: teams-transcript
+Version: 0.1.0
+Summary: Extract Microsoft Teams meeting transcripts from recap pages.
+Requires-Python: >=3.11
+Requires-Dist: playwright>=1.52

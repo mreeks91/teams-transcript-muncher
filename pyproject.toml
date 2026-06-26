@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "teams-transcript"
+version = "0.1.0"
+description = "Extract Microsoft Teams meeting transcripts from recap pages."
+requires-python = ">=3.11"
+dependencies = ["playwright>=1.52"]
+
+[project.scripts]
+teams-transcript = "teams_transcript.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

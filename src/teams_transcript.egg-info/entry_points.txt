@@ -1,0 +1,2 @@
+[console_scripts]
+teams-transcript = teams_transcript.cli:main

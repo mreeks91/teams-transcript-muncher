@@ -33,6 +33,8 @@ _SYSTEM_MSG_RE = re.compile(
     r'started transcription|stopped transcription|recording started|recording stopped',
     re.IGNORECASE,
 )
+# The final item Teams always appends — definitive proof we've reached the end.
+_END_SENTINEL_RE = re.compile(r'stopped transcription', re.IGNORECASE)
 
 
 @dataclass
@@ -206,11 +208,15 @@ def _parse_flat_list(raw_texts: list[str]) -> dict[str, TranscriptEntry]:
 
 async def _collect_visible(
     page: Page, container, *, debug: bool = False
-) -> dict[str, TranscriptEntry]:
+) -> tuple[dict[str, TranscriptEntry], bool]:
     """
     Grab the innerText of every [role=listitem] currently in the DOM
     (scoped to the scroll container if one was found), then parse them
     with _parse_flat_list.
+
+    Returns (entries, found_end_sentinel) where found_end_sentinel is True
+    when the "[name] stopped transcription" item is currently in the DOM —
+    meaning we have scrolled all the way to the last item.
     """
     if container is not None:
         raw_texts: list[str] = await page.evaluate(
@@ -227,7 +233,28 @@ async def _collect_visible(
     if debug:
         print(f"  [collect] {len(raw_texts)} raw items in DOM", flush=True)
 
-    return _parse_flat_list(raw_texts)
+    found_sentinel = any(_END_SENTINEL_RE.search(t) for t in raw_texts)
+    return _parse_flat_list(raw_texts), found_sentinel
+
+
+async def _pause_video(page: Page, *, debug: bool = False) -> None:
+    """
+    Pause any playing HTML5 video so Teams stops auto-scrolling the transcript
+    panel to follow the current playback position.
+    """
+    count: int = await page.evaluate("""
+        () => {
+            let n = 0;
+            for (const v of document.querySelectorAll('video')) {
+                if (!v.paused) { v.pause(); n++; }
+            }
+            return n;
+        }
+    """)
+    if count:
+        print(f"Paused {count} video element(s).", flush=True)
+    elif debug:
+        print("[Video] no playing video found", flush=True)
 
 
 async def _bypass_app_launch_page(page: Page, *, debug: bool = False) -> None:
@@ -308,6 +335,11 @@ async def extract_transcript(
         return []
 
     print("Transcript container found. Scrolling to collect entries...", flush=True)
+
+    # Pause the video so Teams doesn't auto-scroll the transcript panel back
+    # to the current playback position while we're trying to read ahead.
+    await _pause_video(page, debug=debug)
+
     await page.evaluate("(el) => { el.scrollTop = 0; }", container)
     await asyncio.sleep(0.5)
 
@@ -318,7 +350,7 @@ async def extract_transcript(
 
     while True:
         step += 1
-        visible = await _collect_visible(page, container, debug=False)
+        visible, found_sentinel = await _collect_visible(page, container, debug=False)
 
         new_count = 0
         for key, entry in visible.items():
@@ -332,9 +364,6 @@ async def extract_transcript(
         else:
             no_new_streak += 1
 
-        # Check whether we are at the true bottom of the scrollable content.
-        # This is separate from the scroll action so a mid-render pause can't
-        # produce a false "at bottom" reading.
         at_bottom = await page.evaluate(
             "(el) => el.scrollTop + el.clientHeight >= el.scrollHeight - 10",
             container,
@@ -347,20 +376,25 @@ async def extract_transcript(
         if debug:
             print(
                 f"  Step {step:3d}: total={len(all_entries):4d}  new={new_count:3d}"
-                f"  no_new={no_new_streak}  bottom_streak={bottom_streak}",
+                f"  no_new={no_new_streak}  bottom_streak={bottom_streak}"
+                f"  sentinel={'YES' if found_sentinel else 'no'}",
                 flush=True,
             )
 
         if screenshot_dir is not None:
             await page.screenshot(path=str(screenshot_dir / f"debug_scroll_{step:04d}.png"))
 
-        # Primary exit: scroll position has been at the end for several
-        # consecutive steps — we've genuinely reached the last item.
+        # Primary exit: the "[name] stopped transcription" sentinel is in the
+        # DOM — we've scrolled to the very last item.
+        if found_sentinel:
+            break
+
+        # Fallback exit: stuck at the bottom for many steps with no sentinel
+        # (e.g. a meeting where transcription was never formally stopped).
         if bottom_streak >= BOTTOM_STREAK_REQUIRED:
             break
 
-        # Safety exit: no new entries for a long stretch even though we're
-        # not at the bottom — something is wrong with the container.
+        # Safety exit: something is wrong with the container.
         if no_new_streak >= NO_NEW_SAFETY_LIMIT:
             print(
                 f"  Warning: no new entries after {NO_NEW_SAFETY_LIMIT} steps; stopping early.",

@@ -39,25 +39,80 @@ _SYSTEM_MSG_RE = re.compile(
 _END_SENTINEL_RE = re.compile(r'stopped transcription', re.IGNORECASE)
 
 
-def _extract_fileurl(url: str) -> str | None:
+def _extract_fileurl(url: str, *, debug: bool = False) -> str | None:
     """
     Return the decoded SharePoint URL embedded in a Teams meeting link, or None.
 
-    Teams recap URLs often contain a fileURL query parameter, e.g.:
-      https://teams.microsoft.com/...&fileURL=https%3A%2F%2Fcontoso-my.sharepoint.com%2F...
+    Teams recap URLs embed a fileURL in various ways:
+      - Top-level query param: &fileURL=https%3A%2F%2F...
+      - Inside a JSON-encoded 'context' param: context={"fileURL":"https://..."}
+      - Inside the URL fragment (Teams v2 hash-router): #/...?fileURL=...
+      - With multiple layers of encoding
 
-    Teams v2 uses hash-based routing, so the parameter may sit inside the
-    fragment rather than the normal query string.
+    We try progressively decoded versions of the URL and use both parse_qs and
+    a regex fallback so we find the SharePoint URL regardless of encoding depth.
     """
-    parsed = urlparse(url)
-    # Check the real query string first, then anything after '?' in the fragment.
-    candidates = [parsed.query]
-    if '?' in parsed.fragment:
-        candidates.append(parsed.fragment.split('?', 1)[1])
-    for qs in candidates:
-        params = parse_qs(qs)
-        if 'fileURL' in params:
-            return unquote(params['fileURL'][0])
+    candidate = url
+    seen: set[str] = set()
+
+    for depth in range(4):
+        if candidate in seen:
+            break
+        seen.add(candidate)
+
+        parsed = urlparse(candidate)
+
+        # Collect all query-string candidates: normal qs + anything after '?' in fragment
+        query_parts: list[str] = [parsed.query]
+        if '?' in parsed.fragment:
+            query_parts.append(parsed.fragment.split('?', 1)[1])
+
+        for qs in query_parts:
+            if not qs:
+                continue
+            params = parse_qs(qs)
+
+            # Case-insensitive key match (Teams uses 'fileURL' but be safe)
+            for key, values in params.items():
+                if key.lower() == 'fileurl':
+                    val = unquote(values[0])
+                    if val.startswith('http'):
+                        if debug:
+                            print(f"[fileURL] found via parse_qs at decode depth {depth}: {val[:80]}", flush=True)
+                        return val
+
+            # Also search all param values for a JSON object containing fileURL
+            # (Teams sometimes puts {"fileURL":"..."} inside a 'context' param)
+            for values in params.values():
+                for val in values:
+                    m = re.search(r'"fileURL"\s*:\s*"(https?://[^"]+)"', val, re.IGNORECASE)
+                    if m:
+                        result = unquote(m.group(1))
+                        if debug:
+                            print(f"[fileURL] found in JSON param at decode depth {depth}: {result[:80]}", flush=True)
+                        return result
+
+        # Regex fallback: find any SharePoint URL in the current decode level
+        m = re.search(
+            r'https?://[^\s\'"<>&]+\.sharepoint\.com[^\s\'"<>&]*',
+            candidate,
+            re.IGNORECASE,
+        )
+        if m:
+            result = m.group(0)
+            if debug:
+                print(f"[fileURL] found via SharePoint regex at decode depth {depth}: {result[:80]}", flush=True)
+            return result
+
+        next_candidate = unquote(candidate)
+        if next_candidate == candidate:
+            break
+        if debug:
+            print(f"[fileURL] decode depth {depth}: no fileURL found, trying one more unquote pass", flush=True)
+        candidate = next_candidate
+
+    if debug:
+        print("[fileURL] no SharePoint URL found in Teams link", flush=True)
     return None
 
 
@@ -413,7 +468,7 @@ async def extract_transcript(
 ) -> list[TranscriptEntry]:
     # If the Teams URL embeds a SharePoint fileURL, jump straight there — it
     # exposes the same transcript panel without any app-launch redirect dance.
-    sp_url = _extract_fileurl(url)
+    sp_url = _extract_fileurl(url, debug=debug)
     if sp_url:
         print(f"SharePoint URL found in Teams link — navigating directly...", flush=True)
         url = sp_url

@@ -1,2 +1,3 @@
 [console_scripts]
+teams-muncher = teams_transcript.gui:main
 teams-transcript = teams_transcript.cli:main

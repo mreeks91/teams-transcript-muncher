@@ -5,6 +5,7 @@ src/teams_transcript/__main__.py
 src/teams_transcript/cli.py
 src/teams_transcript/extractor.py
 src/teams_transcript/formatter.py
+src/teams_transcript/gui.py
 src/teams_transcript/selectors.py
 src/teams_transcript.egg-info/PKG-INFO
 src/teams_transcript.egg-info/SOURCES.txt

@@ -5,10 +5,8 @@ import asyncio
 import sys
 from pathlib import Path
 
-from teams_transcript.extractor import run_diagnose, run_extract, run_login
+from teams_transcript.extractor import DEFAULT_PROFILE_DIR, run_diagnose, run_extract, run_login
 from teams_transcript.formatter import format_as_text
-
-DEFAULT_PROFILE_DIR = Path.home() / ".teams-transcript" / "playwright-profile"
 
 
 def _build_parser() -> argparse.ArgumentParser:

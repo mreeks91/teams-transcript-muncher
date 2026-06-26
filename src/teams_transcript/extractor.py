@@ -10,6 +10,7 @@ from playwright.async_api import Browser, BrowserContext, Page, async_playwright
 
 from teams_transcript import selectors as sel
 
+DEFAULT_PROFILE_DIR = Path.home() / ".teams-transcript" / "playwright-profile"
 DEFAULT_SCROLL_PAUSE_MS = 700
 DEFAULT_TIMEOUT_SECS = 60
 # How many consecutive steps where scrollTop + clientHeight >= scrollHeight
@@ -580,8 +581,19 @@ async def run_diagnose(
             await ctx.close()
 
 
-async def run_login(profile_dir: Path, channel: str = "msedge") -> None:
-    """Open a browser window so the user can sign in to Teams; saves the session."""
+async def run_login(
+    profile_dir: Path,
+    channel: str = "msedge",
+    *,
+    await_browser_close: bool = False,
+) -> None:
+    """
+    Open a browser window so the user can sign in to Teams and save the session.
+
+    await_browser_close=True  — used by the GUI: returns automatically when the
+                                user closes the browser window (no terminal needed).
+    await_browser_close=False — used by the CLI: waits for Enter in the terminal.
+    """
     async with async_playwright() as p:
         ctx = await p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
@@ -591,13 +603,31 @@ async def run_login(profile_dir: Path, channel: str = "msedge") -> None:
         )
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
         await page.goto("https://teams.microsoft.com")
-        print(
-            "\nBrowser opened. Sign in to Microsoft Teams (complete MFA if prompted).\n"
-            "When the Teams home page is fully loaded, press Enter here to save the session.",
-            flush=True,
-        )
-        await asyncio.to_thread(input, "")
-        await ctx.close()
+
+        if await_browser_close:
+            closed = asyncio.Event()
+            ctx.on("close", lambda: closed.set())
+            # Also fire if the user closes the last page manually
+            for pg in ctx.pages:
+                pg.on("close", lambda _: closed.set() if not ctx.pages else None)
+            try:
+                await asyncio.wait_for(closed.wait(), timeout=600)
+            except asyncio.TimeoutError:
+                pass
+            # ctx may already be closed at this point; ignore the error
+            try:
+                await ctx.close()
+            except Exception:
+                pass
+        else:
+            print(
+                "\nBrowser opened. Sign in to Microsoft Teams (complete MFA if prompted).\n"
+                "When the Teams home page is fully loaded, press Enter here to save the session.",
+                flush=True,
+            )
+            await asyncio.to_thread(input, "")
+            await ctx.close()
+
     print(f"Session saved to: {profile_dir}", flush=True)
 
 

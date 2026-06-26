@@ -11,6 +11,7 @@ dependencies = ["playwright>=1.52"]
 
 [project.scripts]
 teams-transcript = "teams_transcript.cli:main"
+teams-muncher    = "teams_transcript.gui:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

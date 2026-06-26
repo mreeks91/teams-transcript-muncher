@@ -39,11 +39,11 @@ An Edge window will open. Sign in to Microsoft Teams, complete MFA if prompted, 
 # Extract to a file
 teams-transcript "https://teams.microsoft.com/..." -o transcript.txt
 
-# Print to stdout (pipe-friendly)
-teams-transcript "https://teams.microsoft.com/..."
+# Run without a visible browser window (recommended for normal use)
+teams-transcript --headless "https://teams.microsoft.com/..." -o transcript.txt
 
 # Group consecutive lines from the same speaker into blocks
-teams-transcript "https://teams.microsoft.com/..." --group-by-speaker -o transcript.txt
+teams-transcript --headless "https://teams.microsoft.com/..." --group-by-speaker -o transcript.txt
 ```
 
 Output format (default):
@@ -74,6 +74,8 @@ teams-transcript [url] [options]
                              (default: ~/.teams-transcript/playwright-profile)
   --use-edge-profile         Use your live Edge profile instead
                              (Edge must be fully closed first)
+  --headless                 Run without a visible browser window; also
+                             eliminates the OS "Open Teams app?" dialog
   --browser {edge,chrome,chromium}
                              Browser to use (default: edge)
   --group-by-speaker         Merge consecutive lines per speaker into blocks
@@ -109,6 +111,16 @@ teams-transcript --debug "https://teams.microsoft.com/..."
 ```
 
 The output will show which `data-tid` selectors matched. Open DevTools on the recap page, inspect the transcript panel, find the current attribute values, and add them to the front of the relevant list in `src/teams_transcript/selectors.py`.
+
+### Teams link opens an app-launch page ("Open Microsoft Teams?")
+
+When navigating to a Teams meeting URL, Edge may show a page asking you to open the Teams app. The tool handles this automatically — it detects and clicks "Use the web app instead" without any manual intervention.
+
+If you also see an OS-level dialog box (a browser popup asking to open the app), use `--headless` mode, which runs entirely without a visible window and bypasses that dialog entirely:
+
+```powershell
+teams-transcript --headless "https://teams.microsoft.com/..." -o transcript.txt
+```
 
 ### Transcript tab isn't visible at the URL
 

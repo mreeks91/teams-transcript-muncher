@@ -155,6 +155,29 @@ async def _first_text(element, selector_list: list[str]) -> str:
     return ""
 
 
+async def _bypass_app_launch_page(page: Page, *, debug: bool = False) -> None:
+    """
+    Auto-click the 'Use the web app instead' button if Teams redirects to its
+    app-launch landing page instead of opening the web UI directly.
+    All button selectors are tried simultaneously via a combined CSS selector,
+    with a 5-second total timeout. If none are found the page is already on
+    the web app and we proceed normally.
+    """
+    combined = ", ".join(sel.WEB_APP_BUTTON_SELECTORS)
+    try:
+        btn = await page.wait_for_selector(combined, timeout=5000)
+        if debug:
+            print("[App launch] redirect page detected — clicking through", flush=True)
+        await btn.click()
+        try:
+            await page.wait_for_load_state("networkidle", timeout=30_000)
+        except Exception:
+            pass
+    except Exception:
+        if debug:
+            print("[App launch] no redirect page detected", flush=True)
+
+
 async def _try_navigate_to_transcript_tab(page: Page, *, debug: bool = False) -> bool:
     """If we land on a recap page without the transcript visible, click into the tab."""
     if debug:
@@ -179,6 +202,9 @@ async def extract_transcript(
 ) -> list[TranscriptEntry]:
     print(f"Navigating to {url}", flush=True)
     await page.goto(url, wait_until="domcontentloaded", timeout=timeout_secs * 1000)
+
+    # Handle the "Open in Teams app?" redirect page before waiting for full load.
+    await _bypass_app_launch_page(page, debug=debug)
 
     try:
         await page.wait_for_load_state("networkidle", timeout=timeout_secs * 1000)
@@ -283,6 +309,7 @@ async def run_extract(
     *,
     channel: str = "msedge",
     use_live_edge_profile: bool = False,
+    headless: bool = False,
     debug: bool = False,
     scroll_pause_ms: int = DEFAULT_SCROLL_PAUSE_MS,
     timeout_secs: int = DEFAULT_TIMEOUT_SECS,
@@ -299,11 +326,19 @@ async def run_extract(
                 flush=True,
             )
 
+        launch_args = [
+            # Suppress the OS-level "Open Microsoft Teams?" protocol-handler dialog
+            # when navigating to teams.microsoft.com links in non-headless mode.
+            "--disable-features=ExternalProtocolDialog",
+        ]
+        if not headless:
+            launch_args.append("--start-maximized")
+
         ctx = await p.chromium.launch_persistent_context(
             user_data_dir=profile_to_use,
-            headless=False,
+            headless=headless,
             channel=channel,
-            args=["--start-maximized"],
+            args=launch_args,
         )
         page = ctx.pages[0] if ctx.pages else await ctx.new_page()
 

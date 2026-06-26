@@ -63,3 +63,19 @@ TRANSCRIPT_TAB_SELECTORS: list[str] = [
     'button[aria-label*="transcript" i]',
     'a[aria-label*="transcript" i]',
 ]
+
+# Buttons/links on the Teams "Open in app?" landing page.
+# Tried as a combined CSS selector so all are checked simultaneously.
+WEB_APP_BUTTON_SELECTORS: list[str] = [
+    '[data-tid="joinOnWeb"]',
+    '[data-tid="use-web-app"]',
+    '[data-tid="openInBrowser"]',
+    'a:has-text("Use the web app instead")',
+    'button:has-text("Use the web app instead")',
+    'a:has-text("Continue on this browser")',
+    'button:has-text("Continue on this browser")',
+    'a:has-text("Open in browser")',
+    'button:has-text("Open in browser")',
+    'a:has-text("Use web app")',
+    'button:has-text("Use web app")',
+]

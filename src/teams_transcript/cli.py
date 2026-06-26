@@ -51,6 +51,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Browser to use (default: edge)",
     )
     p.add_argument(
+        "--headless",
+        action="store_true",
+        help=(
+            "Run the browser without a visible window. "
+            "Also eliminates the OS 'Open Teams app?' dialog. "
+            "Requires a saved session (run --login first)."
+        ),
+    )
+    p.add_argument(
         "--debug",
         action="store_true",
         help="Print selector probes, entry counts per step, and save scroll screenshots",
@@ -109,6 +118,7 @@ def main() -> None:
             profile_dir,
             channel=channel,
             use_live_edge_profile=args.use_edge_profile,
+            headless=args.headless,
             debug=args.debug,
             scroll_pause_ms=args.scroll_pause,
             timeout_secs=args.timeout,

@@ -522,6 +522,7 @@ async def extract_transcript(
     await page.evaluate("(el) => { el.scrollTop = 0; }", container)
     await asyncio.sleep(0.5)
     await _lock_scroll_forward(page, container, debug=debug)
+    print("Munching...", flush=True)
 
     all_entries: dict[str, TranscriptEntry] = {}
     no_new_streak = 0   # consecutive steps with zero new entries
